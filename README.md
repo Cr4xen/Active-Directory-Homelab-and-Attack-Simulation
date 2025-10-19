@@ -1,10 +1,10 @@
-![Active Directory Homelab Architecture](https://github.com/prakharvrx/Active-Directory-Homelab-and-Attack-Simulation/raw/main/Active%20Directory.jpg)
-
 ---
 
-This Active Directory homelab, built following guidance from TCM Security, provides hands-on experience in AD setup, configuration, and common attack techniques for cybersecurity practice and learning
+# Active Directory Homelab 
 
-# Active Directory Lab
+![Active Directory Homelab Architecture](https://github.com/Cr4xen/Active-Directory-Homelab-and-Attack-Simulation/blob/main/ad%20m.png)
+
+This Active Directory homelab, built following guidance from TCM Security, provides hands-on experience in AD setup, configuration, and common attack techniques for cybersecurity practice and learning
 
 ## Lab Requirements
 
